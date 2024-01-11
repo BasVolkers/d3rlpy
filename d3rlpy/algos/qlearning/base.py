@@ -26,10 +26,13 @@ from ...dataset import (
     Observation,
     ReplayBuffer,
     TransitionMiniBatch,
+    TrajectoryMiniBatch,
     check_non_1d_array,
     create_fifo_replay_buffer,
     is_tuple_shape,
 )
+from ...dataset.trajectory_slicers import EntireTrajectorySlicer
+
 from ...logging import (
     LOG,
     D3RLPyLogger,
@@ -369,6 +372,7 @@ class QLearningAlgoBase(
         logger_adapter: LoggerAdapterFactory = FileAdapterFactory(),
         show_progress: bool = True,
         save_interval: int = 1,
+        use_entire_trajectory: bool = False,
         evaluators: Optional[Dict[str, EvaluatorProtocol]] = None,
         callback: Optional[Callable[[Self, int, int], None]] = None,
         epoch_callback: Optional[Callable[[Self, int, int], None]] = None,
@@ -411,6 +415,7 @@ class QLearningAlgoBase(
                 logger_adapter,
                 show_progress,
                 save_interval,
+                use_entire_trajectory,
                 evaluators,
                 callback,
                 epoch_callback,
@@ -428,6 +433,7 @@ class QLearningAlgoBase(
         logger_adapter: LoggerAdapterFactory = FileAdapterFactory(),
         show_progress: bool = True,
         save_interval: int = 1,
+        use_entire_trajectory: bool = False,
         evaluators: Optional[Dict[str, EvaluatorProtocol]] = None,
         callback: Optional[Callable[[Self, int, int], None]] = None,
         epoch_callback: Optional[Callable[[Self, int, int], None]] = None,
@@ -513,9 +519,15 @@ class QLearningAlgoBase(
                 with logger.measure_time("step"):
                     # pick transitions
                     with logger.measure_time("sample_batch"):
-                        batch = dataset.sample_transition_batch(
-                            self._config.batch_size
-                        )
+                        if not use_entire_trajectory:
+                            batch = dataset.sample_transition_batch(
+                                self._config.batch_size
+                            )
+                        else:
+                            batch = dataset.sample_trajectory_transition_batch(
+                                self._config.batch_size,
+                                length=22,
+                            )
 
                     # update parameters
                     with logger.measure_time("algorithm_update"):
@@ -541,7 +553,7 @@ class QLearningAlgoBase(
 
             # call epoch_callback if given
             if epoch_callback:
-                epoch_callback(self, epoch, total_step)
+                epoch_callback(self, logger, epoch, total_step)
 
             if evaluators:
                 for name, evaluator in evaluators.items():
@@ -812,13 +824,16 @@ class QLearningAlgoBase(
         Returns:
             Dictionary of metrics.
         """
-        torch_batch = TorchMiniBatch.from_batch(
-            batch=batch,
-            device=self._device,
-            observation_scaler=self._config.observation_scaler,
-            action_scaler=self._config.action_scaler,
-            reward_scaler=self._config.reward_scaler,
-        )
+        if isinstance(batch, TorchMiniBatch):
+            torch_batch = batch
+        else:
+            torch_batch = TorchMiniBatch.from_batch(
+                batch=batch,
+                device=self._device,
+                observation_scaler=self._config.observation_scaler,
+                action_scaler=self._config.action_scaler,
+                reward_scaler=self._config.reward_scaler,
+            )
         loss = self.inner_update(torch_batch)
         self._grad_step += 1
         return loss

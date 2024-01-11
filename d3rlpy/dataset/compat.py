@@ -39,6 +39,7 @@ class MDPDataset(ReplayBuffer):
         rewards: np.ndarray,
         terminals: np.ndarray,
         timeouts: Optional[np.ndarray] = None,
+        behavior_policy: Optional[np.ndarray] = None,
         transition_picker: Optional[TransitionPickerProtocol] = None,
         trajectory_slicer: Optional[TrajectorySlicerProtocol] = None,
     ):
@@ -48,6 +49,7 @@ class MDPDataset(ReplayBuffer):
             rewards=rewards,
             terminals=terminals,
             timeouts=timeouts,
+            behavior_policy=behavior_policy,
         )
         buffer = InfiniteBuffer()
         super().__init__(

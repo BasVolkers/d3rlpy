@@ -1,27 +1,82 @@
 from abc import ABC, abstractmethod
+from typing import List
 
 from torch import Tensor
+import torch
 from torch.nn import functional as F
 
 __all__ = ["DivergenceMetricFactory", "DivergenceMetricMixin", "KLDivergence", "SEDivergence", "SupportDivergence"]
 
 class DivergenceMetricMixin(ABC):
     @abstractmethod
-    def __call__(self, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
         """
         Compute the divergence between the output of the policy network and the behavior policy
         """
         raise NotImplementedError
+    
+    def use_dataset_actions(self) -> bool:
+        """
+        If true, then torch.gather is used to select only the probablities of the actions taken in the dataset
+        If false, then the probabilities of all actions are used
+        """
+        return False
 
 class KLDivergence(DivergenceMetricMixin):
     """
     Kullback-Leibler Divergence
     """
-    def __call__(self, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+    def __init__(self) -> None:
+        super().__init__()
+
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
         # KL Loss: L(y_pred, y_true) = y_true * (log(y_true) - log(y_pred))
-        return F.kl_div(log_probs, target_probs, reduction='none', log_target=True).sum(dim=1)
+        # return F.kl_div(log_probs, target_probs, reduction='none', log_target=True).sum(dim=1)
+
+        # KL(P || Q) = sum_x P(x) log(P(x) / Q(x)) = sum_x P(x) (log(P(x)) - log(Q(x)))
+        # result = (target_probs * (target_probs.log() - log_probs)).sum(dim=1)
+    
+        P = target_probs
+        Q = log_probs.exp()
+
+        # P = log_probs.exp()
+        # Q = target_probs    
+        result = self.kl_div(P, Q)
+        return result
+    
+    def kl_div_with_logs(self, P_log, Q_log):
+        return (P_log.exp() * (P_log - Q_log)).sum(dim=1)
+    
+    def kl_div(self, P, Q):
+        return (P * (P.log() - Q.log())).sum(dim=1)
+    
+    def use_dataset_actions(self) -> bool:
+        # True does not manage to keep ESS at a value > 0.1
+        return False
 
     
+class WasserSteinDistance(DivergenceMetricMixin):
+    """
+    Wasserstein Distance
+    """
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+        raise NotImplementedError
+
+
+class TotalVariationDistance(DivergenceMetricMixin):
+    """
+    Total Variation Distance
+    """
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+        probs = log_probs.exp()
+        return (probs - target_probs).abs().sum(dim=1) / 2
+    
+    def use_dataset_actions(self) -> bool:
+        # True does not manage to keep ESS at a value > 0.1
+        # Suddenly it can???
+        return False
+
+
 # class DivergenceThreshold(DivergenceMetricMixin):
 #     """
 #     penalty = 1 if Divergence > threshold
@@ -39,7 +94,7 @@ class SEDivergence(DivergenceMetricMixin):
     """
     Squared Error Divergence
     """
-    def __call__(self, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
         return (target_probs - log_probs.exp()).pow(2).sum(dim=1)
     
 class SupportDivergence(DivergenceMetricMixin):
@@ -55,7 +110,7 @@ class SupportDivergence(DivergenceMetricMixin):
         super().__init__()
         self.epsilon = epsilon
 
-    def __call__(self, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+    def __call__(self,  batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
         """
         target_probs: behavior_policy(a | s)
         probs: policy(a | s)
@@ -63,14 +118,156 @@ class SupportDivergence(DivergenceMetricMixin):
         # TODO: Fix, only look at actual action not target probs
         return (target_probs < self.epsilon).float() * self.INFINITY
     
+class EffectiveSampleSizeL2Distance(DivergenceMetricMixin):
+    """
+    Effective Sample Size (ESS)
+    See https://www.sciencedirect.com/science/article/pii/S0165168416302110#t0005
+    "Hence, maximizing P_N is equivalent to minimizing the Euclidean (L2) distance |w - w*| (ch3)"
+    Where
+    P_N = estimated ESS = 1 / (sum_i w_i^2)
+    w_i = standardized importance weight
+    w  = vector of importance weights [w_1, ..., w_N]
+    w* = uniform weights [1/N, ..., 1/N]
+    
+    Intuition:
+    If the weights are uniform, then the ESS is maximized
+    """
+
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+        """
+        Estimate the ESS for a batch of samples
+        log_probs corresponds to the AI policy
+        target_probs corresponds to the behavior policy
+        """
+        # # Compute standardized importance weights
+        # is_weights = log_probs.exp() / target_probs
+        # wis_weights = is_weights / is_weights.sum()
+        # uniform_dist = torch.ones_like(wis_weights) / wis_weights.shape[0]
+        # # Compute L2 distance between the two distributions
+        # distance = (wis_weights - uniform_dist).pow(2).reshape(-1, 1)#.sum(dim=1)
+        # return distance
+
+        # # Compute standardized importance weights for each action
+        # is_weights = log_probs.exp() / target_probs
+        # wis_weights = is_weights / is_weights.sum(axis=0)
+        # # uniform_dist = torch.ones_like(wis_weights) / self.wis_weights.shape[0]
+        # uniform_dist = torch.zeros_like(wis_weights) / 1145
+        # # Compute L2 distance between the two distributions
+        # distance = (wis_weights - uniform_dist).pow(2).sum(dim=1)
+        # return distance
+    
+        ### Use batch terminals
+        is_terminal = (batch.terminals == 1).squeeze()
+        is_terminal[-1] = 0
+        split_idx = torch.where(is_terminal == 1)[0].to("cpu")
+        
+        is_weights = log_probs.exp() / target_probs
+        is_weights_split = torch.tensor_split(is_weights, split_idx)
+
+        terminal_is_weights = torch.cat([t.cumprod(dim=0)[-1].reshape(1) for t in is_weights_split], dim=0)
+
+        wis_weights = terminal_is_weights / terminal_is_weights.sum(axis=0)
+        uniform_dist = torch.zeros_like(wis_weights) / 1145
+        # Compute L2 distance between the two distributions
+        distance = (wis_weights - uniform_dist).pow(2)
+        
+        # Assign distance to each sample in the batch, again use batch_terminals 
+        is_terminal = (batch.terminals == 1).squeeze()
+        cumsum = is_terminal.cumsum(0)
+        cumsum[is_terminal] -= 1
+        distance = distance[cumsum]
+        return distance
+    
+    def use_dataset_actions(self) -> bool:
+        return True
+    
+class EffectiveSampleSizeVariance(DivergenceMetricMixin):
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+        is_terminal = (batch.terminals == 1).squeeze()
+        is_terminal[-1] = 0
+        split_idx = torch.where(is_terminal == 1)[0].to("cpu")
+        
+        is_weights = log_probs.exp() / target_probs
+        is_weights_split = torch.tensor_split(is_weights, split_idx)
+
+        terminal_is_weights = torch.cat([t.cumprod(dim=0)[-1].reshape(1) for t in is_weights_split], dim=0)
+
+        wis_weights = terminal_is_weights / terminal_is_weights.sum(axis=0)
+        variance_proxy = wis_weights.pow(2).sum(axis=0)
+        return variance_proxy
+
+    def use_dataset_actions(self) -> bool:
+        return True
+    
+class EffectiveSampleSizeRatio(DivergenceMetricMixin):
+    def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+        is_terminal = (batch.terminals == 1).squeeze()
+        is_terminal[-1] = 0
+        split_idx = torch.where(is_terminal == 1)[0].to("cpu")
+        
+        is_weights = log_probs.exp() / target_probs
+        is_weights_split = torch.tensor_split(is_weights, split_idx)
+
+        terminal_is_weights = torch.cat([t.cumprod(dim=0)[-1].reshape(1) for t in is_weights_split], dim=0)
+        wis_weights = terminal_is_weights / terminal_is_weights.sum(axis=0)
+        variance_proxy = wis_weights.pow(2).sum(axis=0)
+        ess = (1 / variance_proxy)
+        ess_ratio = ess / wis_weights.shape[0]
+        return 1 - ess_ratio
+
+    def use_dataset_actions(self) -> bool:
+        return True
+    
+# class EffectiveSampleSizeDistance4(DivergenceMetricMixin):
+#     def __call__(self, batch, log_probs: Tensor, target_probs: Tensor) -> Tensor:
+#         is_terminal = (batch.terminals == 1).squeeze()
+#         is_terminal[-1] = 0
+#         split_idx = torch.where(is_terminal == 1)[0].to("cpu")
+        
+#         is_weights = log_probs.exp() / target_probs
+#         is_weights_split = torch.tensor_split(is_weights, split_idx)
+
+#         terminal_is_weights = torch.cat([t.cumprod(dim=0)[-1].reshape(1) for t in is_weights_split], dim=0)
+
+#         # Punish when the IS weights are too large --> Does not really work
+#         # penalty = (terminal_is_weights > 10).float()
+#         # penalty = terminal_is_weights * penalty
+#         # result = penalty.sum(axis=0)
+#         # return result
+        
+#         wis_weights = terminal_is_weights / terminal_is_weights.sum(axis=0)
+
+#         # No punishment when the weights are < 0.01
+#         # This is to prevent the weights from being too small
+#         t = 0.01
+#         penalty = (wis_weights > t).float()
+#         wis_weights = wis_weights * penalty
+#         result = wis_weights.sum(axis=0)
+#         return result
+
+#     def use_dataset_actions(self) -> bool:
+#         return True
+    
 class DivergenceMetricFactory:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, kwargs) -> None:
         self.name = name
+        self.kwargs = kwargs
 
     def create(self) -> DivergenceMetricMixin:
         if self.name == "se":
-            return SEDivergence()
+            metric = SEDivergence
         elif self.name == "kl":
-            return KLDivergence()
+            metric = KLDivergence
+        elif self.name == "wasserstein":
+            metric = WasserSteinDistance
+        elif self.name == "ess_l2":
+            metric = EffectiveSampleSizeL2Distance
+        elif self.name == "ess_var":
+            metric = EffectiveSampleSizeVariance
+        elif self.name == "ess_ratio":
+            metric = EffectiveSampleSizeRatio
+        elif self.name == "tv":
+            metric = TotalVariationDistance
         else:
             raise ValueError(f"Unknown divergence metric: {self.name}")
+        return metric(**self.kwargs)

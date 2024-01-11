@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 from typing_extensions import Protocol
@@ -66,6 +66,8 @@ class Transition:
     next_observation: Observation  # (...)
     terminal: float
     interval: int
+    behavior_policy: np.ndarray
+    next_behavior_policy: np.ndarray
 
     @property
     def observation_signature(self) -> Signature:
@@ -128,6 +130,7 @@ class PartialTrajectory:
     timesteps: np.ndarray  # (L,)
     masks: np.ndarray  # (L,)
     length: int
+    behavior_policy: np.ndarray # (L, A)
 
     @property
     def observation_signature(self) -> Signature:
@@ -308,6 +311,7 @@ class Episode:
     actions: np.ndarray
     rewards: np.ndarray
     terminated: bool
+    behavior_policy: np.ndarray
 
     @property
     def observation_signature(self) -> Signature:

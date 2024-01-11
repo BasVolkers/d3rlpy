@@ -55,6 +55,7 @@ class BasicTrajectorySlicer(TrajectorySlicerProtocol):
         ret = np.sum(episode.rewards[start:])
         all_returns_to_go = ret - np.cumsum(episode.rewards[start:], axis=0)
         returns_to_go = all_returns_to_go[:actual_size].reshape((-1, 1))
+        behavior_policy = episode.behavior_policy[start:end]
 
         # prepare metadata
         timesteps = np.arange(start, end)
@@ -63,6 +64,7 @@ class BasicTrajectorySlicer(TrajectorySlicerProtocol):
         # compute backward padding size
         pad_size = size - actual_size
 
+        print(start, end, actual_size, pad_size)
         if pad_size == 0:
             return PartialTrajectory(
                 observations=observations,
@@ -73,6 +75,7 @@ class BasicTrajectorySlicer(TrajectorySlicerProtocol):
                 timesteps=timesteps,
                 masks=masks,
                 length=size,
+                behavior_policy=behavior_policy
             )
 
         return PartialTrajectory(
@@ -84,4 +87,33 @@ class BasicTrajectorySlicer(TrajectorySlicerProtocol):
             timesteps=batch_pad_array(timesteps, pad_size),
             masks=batch_pad_array(masks, pad_size),
             length=size,
+            behavior_policy=batch_pad_array(behavior_policy, pad_size),
+        )
+
+class EntireTrajectorySlicer(TrajectorySlicerProtocol):
+    def __call__(
+        self, episode: EpisodeBase, _end_index: int, _size: int
+    ) -> PartialTrajectory:
+
+        # prepare terminal flags
+        terminals = np.zeros((episode.size(), 1), dtype=np.float32)
+        terminals[-1][0] = 1.0
+
+        # slice data
+        observations =episode.observations
+        actions = episode.actions
+        rewards = episode.rewards
+        behavior_policy = episode.behavior_policy
+
+        # prepare metadata
+        return PartialTrajectory(
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            returns_to_go=None,
+            terminals=terminals,
+            timesteps=None,
+            masks=None,
+            length=episode.size(),
+            behavior_policy=behavior_policy
         )

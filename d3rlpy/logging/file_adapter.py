@@ -3,6 +3,7 @@ import os
 from typing import Any, Dict
 
 import numpy as np
+import torch
 
 from .logger import LOG, LoggerAdapter, LoggerAdapterFactory, SaveProtocol
 
@@ -63,7 +64,15 @@ class FileAdapter(LoggerAdapter):
         # save entire model
         model_path = os.path.join(self._logdir, f"model_{epoch}.d3")
         algo.save(model_path)
-        LOG.info(f"Model parameters are saved to {model_path}")
+
+        # Do additional save of .pt files
+        policy_model_path = os.path.join(self._logdir, f"policy_model_{epoch}.pt")
+        # TODO: check correctness of Q function
+        Q_model_path = os.path.join(self._logdir, f"Q_model_{epoch}.pt")
+        torch.save(algo.impl._q_func, Q_model_path)
+        torch.save(algo.impl._policy, policy_model_path)
+
+        LOG.info(f"Model parameters are saved to {self._logdir}")
 
     def close(self) -> None:
         pass

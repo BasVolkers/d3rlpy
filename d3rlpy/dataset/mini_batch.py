@@ -35,6 +35,8 @@ class TransitionMiniBatch:
     next_observations: Union[np.ndarray, Sequence[np.ndarray]]  # (B, ...)
     terminals: np.ndarray  # (B, 1)
     intervals: np.ndarray  # (B, 1)
+    behavior_policy: np.ndarray  # (B, A)
+    next_behavior_policy: np.ndarray  # (B, A)
 
     def __post_init__(self) -> None:
         assert check_non_1d_array(self.observations)
@@ -49,6 +51,10 @@ class TransitionMiniBatch:
         assert check_dtype(self.terminals, np.float32)
         assert check_non_1d_array(self.intervals)
         assert check_dtype(self.intervals, np.float32)
+        assert check_non_1d_array(self.behavior_policy)
+        assert check_dtype(self.behavior_policy, np.float32)
+        assert check_non_1d_array(self.next_behavior_policy)
+        assert check_dtype(self.next_behavior_policy, np.float32)
 
     @classmethod
     def from_transitions(
@@ -82,6 +88,18 @@ class TransitionMiniBatch:
             np.array([transition.terminal for transition in transitions]),
             [-1, 1],
         )
+        behavior_policy = np.stack(
+            [transition.behavior_policy for transition in transitions], axis=0
+        )
+        next_behavior_policy = np.stack(
+            [transition.next_behavior_policy for transition in transitions],
+            axis=0,
+        )
+        # Reshape in the case of continuous action space, i.e. one probability per transition
+        if len(behavior_policy.shape) == 1:
+            behavior_policy = behavior_policy.reshape(-1, 1)
+        if len(next_behavior_policy.shape) == 1:
+            next_behavior_policy = next_behavior_policy.reshape(-1, 1)
         return TransitionMiniBatch(
             observations=cast_recursively(observations, np.float32),
             actions=cast_recursively(actions, np.float32),
@@ -89,6 +107,8 @@ class TransitionMiniBatch:
             next_observations=cast_recursively(next_observations, np.float32),
             terminals=cast_recursively(terminals, np.float32),
             intervals=cast_recursively(intervals, np.float32),
+            behavior_policy=cast_recursively(behavior_policy, np.float32),
+            next_behavior_policy=cast_recursively(next_behavior_policy, np.float32),
         )
 
     @property
@@ -120,7 +140,43 @@ class TransitionMiniBatch:
 
     def __len__(self) -> int:
         return int(self.actions.shape[0])
+    
+    @classmethod
+    def from_partial_trajectories(
+        cls, trajectories: Sequence[PartialTrajectory]
+    ) -> "TransitionMiniBatch":
+        r"""Constructs mini-batch from list of trajectories.
 
+        Args:
+            trajectories: List of trajectories.
+
+        Returns:
+            Mini-batch of trajectories.
+        """
+        observations = np.concatenate([traj.observations for traj in trajectories], axis=0)
+        actions = np.concatenate([traj.actions for traj in trajectories], axis=0)
+        rewards = np.concatenate([traj.rewards for traj in trajectories], axis=0)
+        terminals = np.concatenate([traj.terminals for traj in trajectories], axis=0)
+        behavior_policy = np.concatenate([traj.behavior_policy for traj in trajectories], axis=0)
+        intervals = np.concatenate([traj.terminals for traj in trajectories], axis=0)
+
+        # Get next observations and next behavior policy
+        is_terminal = (terminals == 1).squeeze()
+        next_observations = np.roll(observations, -1, axis=0)
+        next_observations[is_terminal] = 0
+
+        next_behavior_policy = np.roll(behavior_policy, -1, axis=0)
+        next_behavior_policy[is_terminal] = 0
+        return TransitionMiniBatch(
+            observations=cast_recursively(observations, np.float32),
+            actions=cast_recursively(actions, np.float32),
+            rewards=cast_recursively(rewards, np.float32),
+            terminals=cast_recursively(terminals, np.float32),
+            intervals=cast_recursively(intervals, np.float32),
+            next_observations=cast_recursively(next_observations, np.float32),
+            behavior_policy=cast_recursively(behavior_policy, np.float32),
+            next_behavior_policy=cast_recursively(next_behavior_policy, np.float32),
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrajectoryMiniBatch:
@@ -144,6 +200,7 @@ class TrajectoryMiniBatch:
     timesteps: np.ndarray  # (B, L)
     masks: np.ndarray  # (B, L)
     length: int
+    behavior_policy: np.ndarray  # (B, L, A)
 
     def __post_init__(self) -> None:
         assert check_dtype(self.observations, np.float32)
@@ -153,6 +210,7 @@ class TrajectoryMiniBatch:
         assert check_dtype(self.terminals, np.float32)
         assert check_dtype(self.timesteps, np.float32)
         assert check_dtype(self.masks, np.float32)
+        assert check_dtype(self.behavior_policy, np.float32)
 
     @classmethod
     def from_partial_trajectories(
@@ -177,6 +235,7 @@ class TrajectoryMiniBatch:
         terminals = np.stack([traj.terminals for traj in trajectories], axis=0)
         timesteps = np.stack([traj.timesteps for traj in trajectories], axis=0)
         masks = np.stack([traj.masks for traj in trajectories], axis=0)
+        behavior_policy = np.stack([traj.behavior_policy for traj in trajectories], axis=0)
         return TrajectoryMiniBatch(
             observations=cast_recursively(observations, np.float32),
             actions=cast_recursively(actions, np.float32),
@@ -186,6 +245,7 @@ class TrajectoryMiniBatch:
             timesteps=cast_recursively(timesteps, np.float32),
             masks=cast_recursively(masks, np.float32),
             length=trajectories[0].length,
+            behavior_policy=cast_recursively(behavior_policy, np.float32),
         )
 
     @property
@@ -217,3 +277,4 @@ class TrajectoryMiniBatch:
 
     def __len__(self) -> int:
         return int(self.actions.shape[0])
+    

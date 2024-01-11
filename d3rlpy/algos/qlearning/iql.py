@@ -8,10 +8,15 @@ from ...models.builders import (
     create_continuous_q_function,
     create_non_squashed_normal_policy,
     create_value_function,
+    create_categorical_policy,
+    create_continuous_q_function,
+    create_discrete_q_function,
+    create_parameter,
+    create_squashed_normal_policy,
 )
 from ...models.encoders import EncoderFactory, make_encoder_field
 from ...models.optimizers import OptimizerFactory, make_optimizer_field
-from ...models.q_functions import MeanQFunctionFactory
+from ...models.q_functions import MeanQFunctionFactory, QFunctionFactory, make_q_func_field
 from ...torch_utility import TorchMiniBatch
 from .base import QLearningAlgoBase
 from .torch.iql_impl import IQLImpl
@@ -178,5 +183,99 @@ class IQL(QLearningAlgoBase[IQLImpl, IQLConfig]):
     def get_action_type(self) -> ActionSpace:
         return ActionSpace.CONTINUOUS
 
+@dataclasses.dataclass()
+class DiscreteIQLConfig(LearnableConfig):
+    actor_learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4
+    actor_optim_factory: OptimizerFactory = make_optimizer_field()
+    critic_optim_factory: OptimizerFactory = make_optimizer_field()
+    actor_encoder_factory: EncoderFactory = make_encoder_field()
+    critic_encoder_factory: EncoderFactory = make_encoder_field()
+    value_encoder_factory: EncoderFactory = make_encoder_field()
+    q_func_factory: QFunctionFactory = make_q_func_field()
+    batch_size: int = 256
+    gamma: float = 0.99
+    tau: float = 0.005
+    n_critics: int = 2
+    expectile: float = 0.7
+    weight_temp: float = 3.0
+    max_weight: float = 100.0
+
+    def create(self, device: DeviceArg = False) -> "IQL":
+        return IQL(self, device)
+
+    @staticmethod
+    def get_type() -> str:
+        return "discrete_iql"
+
+
+class DiscreteIQL(QLearningAlgoBase[IQLImpl, DiscreteIQLConfig]):
+    def inner_create_impl(
+        self, observation_shape: Shape, action_size: int
+    ) -> None:
+        policy = create_categorical_policy(
+            observation_shape,
+            action_size,
+            self._config.actor_encoder_factory,
+            device=self._device,
+        )
+        q_func = create_discrete_q_function(
+            observation_shape,
+            action_size,
+            self._config.critic_encoder_factory,
+            self._config.q_func_factory,
+            n_ensembles=self._config.n_critics,
+            device=self._device,
+        )
+        value_func = create_value_function(
+            observation_shape,
+            self._config.value_encoder_factory,
+            device=self._device,
+        )
+
+        actor_optim = self._config.actor_optim_factory.create(
+            policy.parameters(), lr=self._config.actor_learning_rate
+        )
+        q_func_params = list(q_func.parameters())
+        v_func_params = list(value_func.parameters())
+        critic_optim = self._config.critic_optim_factory.create(
+            q_func_params + v_func_params, lr=self._config.critic_learning_rate
+        )
+
+        self._impl = IQLImpl(
+            observation_shape=observation_shape,
+            action_size=action_size,
+            policy=policy,
+            q_func=q_func,
+            value_func=value_func,
+            actor_optim=actor_optim,
+            critic_optim=critic_optim,
+            gamma=self._config.gamma,
+            tau=self._config.tau,
+            expectile=self._config.expectile,
+            weight_temp=self._config.weight_temp,
+            max_weight=self._config.max_weight,
+            device=self._device,
+        )
+
+    def inner_update(self, batch: TorchMiniBatch) -> Dict[str, float]:
+        assert self._impl is not None, IMPL_NOT_INITIALIZED_ERROR
+
+        metrics = {}
+
+        critic_loss, value_loss = self._impl.update_critic_and_state_value(
+            batch
+        )
+        metrics.update({"critic_loss": critic_loss, "value_loss": value_loss})
+
+        actor_loss = self._impl.update_actor(batch)
+        metrics.update({"actor_loss": actor_loss})
+
+        self._impl.update_critic_target()
+
+        return metrics
+
+    def get_action_type(self) -> ActionSpace:
+        return ActionSpace.DISCRETE
 
 register_learnable(IQLConfig)

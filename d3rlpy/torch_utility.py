@@ -180,6 +180,8 @@ class TorchMiniBatch:
     next_observations: torch.Tensor
     terminals: torch.Tensor
     intervals: torch.Tensor
+    behavior_policy: torch.Tensor
+    next_behavior_policy: torch.Tensor
     device: str
     numpy_batch: Optional[TransitionMiniBatch] = None
 
@@ -201,6 +203,8 @@ class TorchMiniBatch:
         )
         terminals = convert_to_torch(batch.terminals, device)
         intervals = convert_to_torch(batch.intervals, device)
+        behavior_policy = convert_to_torch(batch.behavior_policy, device)
+        next_behavior_policy = convert_to_torch(batch.next_behavior_policy, device)
 
         # TODO: support tuple observation
         assert isinstance(observations, torch.Tensor)
@@ -222,6 +226,8 @@ class TorchMiniBatch:
             next_observations=next_observations,
             terminals=terminals,
             intervals=intervals,
+            behavior_policy=behavior_policy,
+            next_behavior_policy=next_behavior_policy,
             device=device,
             numpy_batch=batch,
         )

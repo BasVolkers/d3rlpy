@@ -23,6 +23,7 @@ from .preprocessing import (
 )
 from .serializable_config import DynamicConfig, generate_config_registration
 from .torch_utility import get_state_dict, map_location, set_state_dict
+from pathlib import Path
 
 __all__ = [
     "DeviceArg",

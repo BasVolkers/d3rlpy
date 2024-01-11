@@ -47,12 +47,16 @@ class BasicTransitionPicker(TransitionPickerProtocol):
 
         observation = retrieve_observation(episode.observations, index)
         is_terminal = episode.terminated and index == episode.size() - 1
+        behavior_policy = episode.behavior_policy[index]
         if is_terminal:
             next_observation = create_zero_observation(observation)
+            # How do we expect this to work?
+            next_behavior_policy = np.zeros_like(behavior_policy)
         else:
             next_observation = retrieve_observation(
                 episode.observations, index + 1
             )
+            next_behavior_policy = episode.behavior_policy[index + 1]
         return Transition(
             observation=observation,
             action=episode.actions[index],
@@ -60,6 +64,8 @@ class BasicTransitionPicker(TransitionPickerProtocol):
             next_observation=next_observation,
             terminal=float(is_terminal),
             interval=1,
+            behavior_policy=behavior_policy,
+            next_behavior_policy=next_behavior_policy,
         )
 
 

@@ -2,6 +2,7 @@ from typing import Any, BinaryIO, List, Optional, Sequence, Type, Union
 
 import gym
 import numpy as np
+import torch
 
 from .buffers import BufferProtocol, FIFOBuffer, InfiniteBuffer
 from .components import (
@@ -14,7 +15,7 @@ from .components import (
 from .episode_generator import EpisodeGeneratorProtocol
 from .io import dump, load
 from .mini_batch import TrajectoryMiniBatch, TransitionMiniBatch
-from .trajectory_slicers import BasicTrajectorySlicer, TrajectorySlicerProtocol
+from .trajectory_slicers import BasicTrajectorySlicer, TrajectorySlicerProtocol, EntireTrajectorySlicer
 from .transition_pickers import BasicTransitionPicker, TransitionPickerProtocol
 from .types import Observation
 from .writers import (
@@ -102,7 +103,7 @@ class ReplayBuffer:
         cache_size: int = 10000,
     ):
         transition_picker = transition_picker or BasicTransitionPicker()
-        trajectory_slicer = trajectory_slicer or BasicTrajectorySlicer()
+        trajectory_slicer = trajectory_slicer or EntireTrajectorySlicer()
         writer_preprocessor = writer_preprocessor or BasicWriterPreprocess()
 
         if not (
@@ -214,7 +215,7 @@ class ReplayBuffer:
         index = np.random.randint(self._buffer.transition_count)
         episode, transition_index = self._buffer[index]
         return self._trajectory_slicer(episode, transition_index, length)
-
+    
     def sample_trajectory_batch(
         self, batch_size: int, length: int
     ) -> TrajectoryMiniBatch:
@@ -228,6 +229,13 @@ class ReplayBuffer:
             Mini-batch.
         """
         return TrajectoryMiniBatch.from_partial_trajectories(
+            [self.sample_trajectory(length) for _ in range(batch_size)]
+        )
+    
+    def sample_trajectory_transition_batch(
+        self, batch_size: int, length: int
+    ) -> TransitionMiniBatch:
+        return TransitionMiniBatch.from_partial_trajectories(
             [self.sample_trajectory(length) for _ in range(batch_size)]
         )
 
@@ -447,3 +455,79 @@ def create_infinite_replay_buffer(
         writer_preprocessor=writer_preprocessor,
         env=env,
     )
+
+class ReplayBufferGPU:
+    def __init__(
+        self,
+        replay_buffer: ReplayBuffer,
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        terminals: np.ndarray,
+        behavior_policy: Optional[np.ndarray] = None,
+    ):
+        self.replay_buffer = replay_buffer
+
+        self.observations = observations.astype(np.float32)
+        self.actions = actions.astype(np.float32)
+        self.rewards = rewards.reshape(-1, 1).astype(np.float32)
+        self.terminals = terminals.astype(np.float32)
+        # Transition picker does this when is_terminal == 1:
+        # next_observation = create_zero_observation(observation)
+        # next_behavior_policy = np.zeros_like(behavior_policy)
+        self.behavior_policy = behavior_policy.astype(np.float32)
+
+        self.next_observations = np.roll(observations, -1, axis=0)
+        self.next_observations[self.terminals == 1] = 0
+        self.next_observations  = self.next_observations.astype(np.float32)
+
+        self.next_behavior_policy = np.roll(behavior_policy, -1, axis=0)
+        self.next_behavior_policy[self.terminals == 1] = 0
+        self.next_behavior_policy = self.next_behavior_policy.astype(np.float32)
+
+        self.terminals = self.terminals.reshape(-1, 1)
+        self.intervals = np.ones_like(self.terminals)
+        self._device = "cuda:0"
+
+        self.observations = torch.from_numpy(self.observations).to(self._device)
+        self.actions = torch.from_numpy(self.actions).to(self._device)
+        self.rewards = torch.from_numpy(self.rewards).to(self._device)
+        self.terminals = torch.from_numpy(self.terminals).to(self._device)
+        self.intervals = torch.from_numpy(self.intervals).to(self._device)
+        self.behavior_policy = torch.from_numpy(self.behavior_policy).to(self._device)
+        self.next_observations = torch.from_numpy(self.next_observations).to(self._device)
+        self.next_behavior_policy = torch.from_numpy(self.next_behavior_policy).to(self._device)
+
+        from d3rlpy.torch_utility import TorchMiniBatch
+        self.TorchMiniBatch = TorchMiniBatch
+
+
+    def sample_transition_batch(self, batch_size: int) -> "TorchMiniBatch":
+        r"""Samples a torch mini-batch of transitions.
+
+        Args:
+            batch_size: Mini-batch size.
+
+        Returns:
+            Mini-batch.
+        """
+        idx = np.random.randint(self.observations.shape[0], size=batch_size)
+        batch = self.TorchMiniBatch(
+            observations=self.observations[idx],
+            actions=self.actions[idx],
+            rewards=self.rewards[idx],
+            next_observations=self.next_observations[idx],
+            terminals=self.terminals[idx],
+            intervals=self.intervals[idx],
+            behavior_policy=self.behavior_policy[idx],
+            next_behavior_policy=self.next_behavior_policy[idx],
+            device=self._device,
+        )
+        return batch
+    
+    def sample_transition(self):
+        return self.replay_buffer.sample_transition()
+    
+    @property
+    def episodes(self):
+        return self.replay_buffer.episodes
